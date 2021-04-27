@@ -1,0 +1,386 @@
+---
+title: "Visualizations using SCE outage data for CPA jurisdictions"
+author: "David Segan"
+date: "4/27/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, error = FALSE, message = FALSE)
+```
+
+```{r}
+# --------------
+# attach packages
+# --------------
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(paletteer)
+library(dplyr)
+library(scales)
+library(extrafont)
+library(gfonts)
+library(formattable)
+get_all_fonts()
+
+```
+
+```{r}
+# ---------
+# Read in data
+# ---------
+
+hist_outages <- read_excel("SCE_Reliability_Metrics.xlsx") %>% 
+  janitor::clean_names() %>% 
+  mutate(jurisdiction = str_remove_all(jurisdiction, "Unincorporated")) %>% 
+  mutate(total_outage_hrs = total_customers * sce_average_saidi_hours) %>% 
+  mutate(natdis_psps_outages = percent_saifi_psps_weather_fire_earthquake2*sce_average_saifi_interruptions)
+
+# --------
+# Check value types
+# --------
+
+# class(hist_outages$year) # numeric
+# class(hist_outages$percent_saidi_psps) # numeric
+```
+
+On average, what jurisdictions have had the most time per customer without power from 2016 through 2019? 
+```{r}
+# data frame
+avg_outages <- hist_outages %>% 
+  group_by(jurisdiction, county) %>% 
+  summarize(mean_saidi_hrs = mean(sce_average_saidi_hours)) %>% 
+  arrange(-mean_saidi_hrs)
+
+# graph
+avg_outages_graph <- ggplot(data = avg_outages,
+                            aes(x = mean_saidi_hrs,
+                                y = fct_reorder(jurisdiction,mean_saidi_hrs),
+                                fill = county)) +
+  geom_col() + 
+  theme_minimal() +
+  scale_fill_manual(values = c("orange", "cornflowerblue")) +
+  scale_x_continuous(lim = c(0,60), expand = c(0,0)) +
+  labs(x = "Hours",
+       y = "Jurisdiction",
+       title = "Average Annual Outage Time \nPer Customer (2016-2019)",
+       fill = "County")
+  
+avg_outages_graph
+
+# ggsave("avg_annual_outage_duration_barchart.jpg")
+
+# Note outlier: In 2018, residents of Malibu served by SCE had ~211 hours without grid electricity
+```
+
+What jurisdiction had the most overall outage hours? This could be considered total damage (as opposed to per person in previous chart), as it takes into account population.
+```{r}
+# data frame
+tot_outages <- hist_outages %>% 
+  group_by(jurisdiction, county) %>% 
+  # Total outage hours is equal to total customers x average outage time per customer (SAIDI)
+  # total_outage_hrs was calculated outside of R
+  summarize(total_outage_hrs = mean(total_outage_hrs)) %>% 
+  arrange(-total_outage_hrs)
+
+
+# graph
+tot_outages_graph <- ggplot(data = tot_outages,
+                            aes(x = total_outage_hrs,
+                                y = fct_reorder(jurisdiction,total_outage_hrs),
+                                fill = county)) +
+  geom_col() + 
+  theme_minimal() +
+  scale_fill_manual(values = c("orange", "cornflowerblue")) +
+  scale_x_continuous(lim = c(0,900000), expand = c(0,0), labels = comma) +
+  labs(x = "Hours",
+       y = "Jurisdiction",
+       title = "Total Outage Time \n(Averaged across 2016-2019)",
+       fill = "County")
+
+tot_outages_graph
+
+# ggsave("tot_outage_time_barchart.jpg")
+```
+
+What are the causes of outages in CPA service territory? 
+```{r}
+# data frame
+outage_causes <- hist_outages %>% 
+  # add columns that sum hrs due to specific causes
+  mutate(hrs_psps = total_outage_hrs * percent_saidi_psps) %>% 
+  mutate(hrs_weather_fire_quake = total_outage_hrs * percent_saidi_weather_fire_earthquake) %>% 
+  mutate(hrs_veg_animal = total_outage_hrs * percent_saidi_vegetation_animal) %>% 
+  mutate(hrs_other = total_outage_hrs * percent_saidi_other) %>% 
+  mutate(hrs_equipment = total_outage_hrs * percent_saidi_equipment_failure) %>% 
+  mutate(hrs_3rdparty = total_outage_hrs * percent_saidi_3rd_party) %>% 
+  # select only columns needed
+  select(jurisdiction, total_customers, year, hrs_psps,hrs_weather_fire_quake, hrs_veg_animal, hrs_other, hrs_equipment, hrs_3rdparty) %>% 
+  # group and sum by year
+  group_by(year) %>% 
+  summarize(hrs_psps = (sum(hrs_psps, na.rm = TRUE)/sum(total_customers)),
+            hrs_weather_fire_quake = (sum(hrs_weather_fire_quake, na.rm = TRUE)/sum(total_customers)),
+            hrs_veg_animal = (sum(hrs_veg_animal, na.rm = TRUE)/sum(total_customers)),
+            hrs_other = (sum(hrs_other, na.rm = TRUE)/sum(total_customers)),
+            hrs_equipment = (sum(hrs_equipment, na.rm = TRUE)/sum(total_customers)),
+            hrs_3rdparty = (sum(hrs_3rdparty, na.rm = TRUE)/sum(total_customers))) %>% 
+  # pivot longer to have column for cause and column for hours
+  pivot_longer('hrs_psps':'hrs_3rdparty',
+               names_to = "cause",
+               values_to = "hours")
+
+outage_causes_graph <- ggplot(data = outage_causes,
+                              aes(x = year,
+                                  y = hours)) +
+  geom_col(aes(fill = cause)) + 
+  theme_minimal() +
+  # scale_fill_paletteer_d("ggsci::default_jama") +
+  labs(x = "Year",
+       y = "Hours per Customer",
+       title = "The causes of outages in CPA service territory",
+       fill = "Cause") +
+  # manually entered hex codes of ggsci default jama using this webpage: https://thefeeney.netlify.app/post/color-palettes-in-r/
+  scale_fill_manual(values = c("#374E55FF", "#80796BFF", "#00A1D5FF", "#B24745FF", "#79AF97FF", "#DF8F44FF"), labels = c("3rd Party", "Equipment Failure", "Other", "PSPS", "Vegetation or Animal", "Weather, Fire, or Earthquake")) +
+  theme(legend.title = element_text(size = 16),
+        legend.text = element_text(size = 15),
+        axis.title = element_text(size = 16),
+        title = element_text(size = 18),
+        axis.text = element_text(size = 15))
+
+outage_causes_graph
+
+# ggsave("outage_causes_stacked_bar_chart.jpg")
+```
+
+On average, how long will it take to restore power? 
+```{r}
+# data frame
+
+# add caidi values # "CAIDI" = (SAIDI/SAIFI) 
+caidi <- hist_outages %>% 
+  mutate(caidi_minutes = sce_average_saidi_minutes/sce_average_saifi_interruptions) %>% 
+  mutate(caidi_hrs = sce_average_saidi_hours/sce_average_saifi_interruptions) %>% 
+  group_by(jurisdiction, county) %>% 
+  summarize(mean_caidi_hrs = mean(caidi_hrs)) %>% 
+  arrange(-mean_caidi_hrs)
+
+# graph
+caidi_graph <- ggplot(data = caidi,
+                            aes(x = mean_caidi_hrs,
+                                y = fct_reorder(jurisdiction, mean_caidi_hrs),
+                                fill = county)) +
+  geom_col() + 
+  theme_minimal() +
+  scale_fill_manual(values = c("orange", "cornflowerblue")) +
+  scale_x_continuous(lim = c(0,13), expand = c(0,0)) +
+  labs(x = "Hours",
+       y = "Jurisdiction",
+       title = "Average Time to Restore Power (2016-2019)",
+       fill = "County") +
+  theme_minimal() +
+  theme(
+    plot.subtitle = element_text(hjust = 0),
+    legend.background = element_rect(fill="white", linetype="solid", colour = "white"),
+    legend.position = c(.85,.26),
+    # plot.margin=unit(c(.5,1.1,.5,.5),"cm"),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 15),
+        axis.title = element_text(size = 16),
+        title = element_text(size = 18),
+        axis.text = element_text(size = 13))
+
+caidi_graph
+
+# ggsave("avg_caidi_barchart.jpg")
+```
+
+On average, how many outages occur?
+```{r}
+# data frame
+# SAIFI = frequency
+saifi <- hist_outages %>% 
+  group_by(jurisdiction, county) %>% 
+  summarize(mean_saifi = mean(sce_average_saifi_interruptions)) %>% 
+  arrange(-mean_saifi)
+
+# graph
+avg_saifi_graph <- ggplot(data = saifi,
+                            aes(x = mean_saifi,
+                                y = fct_reorder(jurisdiction,mean_saifi),
+                                fill = county)) +
+  geom_col() + 
+  theme_minimal() +
+  scale_fill_manual(values = c("orange", "cornflowerblue")) +
+  scale_x_continuous(lim = c(0,4), expand = c(0,0)) +
+  labs(x = "Outages",
+       y = "Jurisdiction",
+       title = "Average Number of Outages Per Year",
+       subtitle = "Average across 2016-2019",
+       fill = "County")
+
+avg_saifi_graph
+
+# ggsave("avg_saifi_barchart.jpg")
+```
+
+```{r}
+# Have more frequent outages caused by PSPS events, Weather, Fire, or Earthquake been associated with longer outage durations?
+
+# Ideally, we would have data on specific PSPS/Weather/Fire/Earthquake outages.
+# This data was not used for any correlation analysis or included in the final report
+
+#graph
+# natdis_scatter_all_yrs <- ggplot(data = hist_outages,
+#                           aes(x = natdis_psps_outages,
+#                               y = caidi_hours,
+#                               color = year)) +
+#   geom_point() +
+
+#   theme_minimal() +
+#   scale_color_paletteer_d("ggthemes::colorblind") +
+#   scale_x_continuous(lim = c(0,2), expand = c(0,0)) +
+#   geom_smooth(method = "lm") +
+#   labs(x = "Average # of Outages Caused by PSPS, Weather, Fire, or Earthquake",
+#        y = "Customer Average Outage Duration (CAIDI)",
+#        title = "Natural disaster caused outages affect duration",
+#        subtitle = "2016-2019",
+#        color = "Year")
+# 
+# natdis_scatter_all_yrs
+
+```
+
+How has outage length changed over time across all of SCE service territory?
+```{r}
+# Data is available over a longer time period for all of SCE territory in a different data set. This is as opposed to the jurisdiction specific data that has been looked at in prior graphs.
+
+# read in data
+eia_ca_reliability <- read_excel("EIA_Utility_Reliability_Data.xlsx", skip = 1) %>% 
+  clean_names() %>% 
+  rename(year = data_year) %>% 
+  filter(state == "CA") %>% 
+  # change all numbers from character to numeric
+  mutate_at(vars(matches("med")), funs(as.numeric)) %>% 
+  mutate(saidi_hrs = saidi_with_med_6/60)
+
+# filter for just SCE
+eia_sce_reliability <- eia_ca_reliability %>% 
+  filter(utility_name == "Southern California Edison Co") 
+
+#graph
+sce_outage_plot <- ggplot(data = eia_sce_reliability,
+                          aes(x = year,
+                              y = saidi_hrs)) +
+  geom_line() + 
+  theme_minimal() +
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    plot.margin=unit(c(.5,1.1,.5,.5),"cm"),
+    axis.title = element_text(size = 15),
+    title = element_text(size = 18),
+    axis.text = element_text(size = 13)) +
+  scale_x_continuous(expand = c(0,.1)) +
+  scale_y_continuous(lim = c(1.5,3)) +
+  labs(x = "Year",
+       y = "Average Customer Outage \nDuration (hours/year)",
+       title = "Upward Trend of Outage Lengths in SCE Service Territory (2013-2019)")
+
+sce_outage_plot
+
+# ggsave("sce_outage_plot.jpg")
+```
+
+What is the value of backup power for each jurisdiction based on average historical outage trends?
+
+```{r}
+# df that contains data for cost of outage and value of resilience equations
+caidi_vor <- hist_outages %>% 
+  group_by(jurisdiction, county) %>% 
+  summarize(mean_caidi_hrs = mean(caidi_hours), mean_saidi_hrs = mean(sce_average_saidi_hours), mean_saifi = mean(sce_average_saifi_interruptions),
+            mean_pct_natdis_psps = mean(percent_saidi_psps_weather_fire_earthquake)) %>% 
+  arrange(-mean_caidi_hrs)
+
+# data frame
+vor_equation <- caidi_vor %>% 
+  # discount rate so future year value can be discounted to present day (to compare to upfront cost of system and islanding)
+  mutate(discount_rate = .05) %>% 
+  #liftime of system
+  mutate(system_life = 10) %>% 
+  # cost_unserved_kWh will be synonymous with VoLL ($/kWh). The term Voll is used in the final report
+  # see final report for explanation on the benefit transfer method used to determine these values
+  # --------------------
+  # if possible, these cost_unserved_kWh values should be changed based on specific critical facility through the stated preference method (survey) or analysis of the value of the service provided
+  # --------------------
+  mutate(cost_unserved_kwh_1hr = 21.8) %>% 
+  mutate(cost_unserved_kwh_4hr = 12.1) %>% 
+  mutate(cost_unserved_kwh_8hr = 12.9) %>% 
+  mutate(cost_unserved_kwh_16hr = 12.7) %>% 
+  # interpolation
+  mutate(cost_unserved_kwh_caidi = if(mean_caidi_hrs < 4) {
+    (cost_unserved_kwh_1hr+((mean_caidi_hrs-1)/(4-1))*(cost_unserved_kwh_4hr-cost_unserved_kwh_1hr))
+  } else if (mean_caidi_hrs >= 4 & mean_caidi_hrs < 8) {
+    (cost_unserved_kwh_4hr+((mean_caidi_hrs-4)/(8-4))*(cost_unserved_kwh_8hr-cost_unserved_kwh_4hr))
+  } else if (mean_caidi_hrs >= 8 & mean_caidi_hrs < 16) {
+    (cost_unserved_kwh_8hr+((mean_caidi_hrs-8)/(16-8))*(cost_unserved_kwh_16hr-cost_unserved_kwh_8hr))
+  } else {
+    cost_unserved_kwh_16hr
+  }) %>% 
+  # --------------------
+  # avg_load_kw should be changed based on specific critical facility
+  # --------------------
+  mutate(avg_load_kw = 815) %>% 
+  # --------------------
+  # avg_critical_load_kw should be changed based on specific critical facility
+  # --------------------
+  mutate(avg_critical_load_kw = 50) %>% 
+  mutate(cost_outage_per_hour = avg_load_kw*cost_unserved_kwh_caidi) %>% 
+  mutate(cost_outage = avg_load_kw*cost_unserved_kwh_caidi*mean_caidi_hrs) %>% 
+  # --------------------
+  # pv_storage_backup_hrs should be changed based on specific pv+s system and critical_load_kw
+  # --------------------
+  mutate(pv_storage_backup_hrs = 4) %>% 
+  mutate(effective_backup_hrs = if((mean_caidi_hrs-pv_storage_backup_hrs) <0) {
+    mean_caidi_hrs
+  } else {
+    pv_storage_backup_hrs
+  }) %>% 
+  mutate(value_resilience = cost_unserved_kwh_caidi*avg_critical_load_kw*effective_backup_hrs) %>% 
+  mutate(value_resilience_thousands = value_resilience/1000) %>% 
+  mutate(lifetime_value_resilience = (value_resilience*mean_saifi)*((1-(1+discount_rate)^-system_life)/discount_rate)) %>% 
+  mutate(mean_pct_natdis_psps = formattable::percent(mean_pct_natdis_psps))
+
+# graph
+vor_graph <- ggplot(data = vor_equation, 
+                                          aes(x = lifetime_value_resilience,
+                                              y = fct_reorder(jurisdiction,lifetime_value_resilience),
+                                              fill = mean_pct_natdis_psps)) +
+  geom_col() + 
+  scale_fill_paletteer_c("ggthemes::Red", labels = percent) +
+  scale_x_continuous(lim = c(0,80000), expand = c(0,0), labels = dollar_format()) +
+  labs(x = "Value of Resilience",
+       y = "Jurisdiction",
+       title = "The value of resilience varies by community",
+       subtitle = "Modeled scenario over 10 years with 50kw of critical load that is sustained \nfor up to 4 hours each outage. The cost of unserved kWh ranges between \n$21.8 and $12.7 depending on outage length, and the discount rate is 5%",
+       fill = "Average % contribution to \noutage time from PSPS \nevents & natural disasters") +
+  theme_minimal() +
+  theme(
+    legend.background = element_rect(fill="white", linetype="solid", colour = "white"),
+    legend.position = c(.81,.31),
+    plot.margin=unit(c(.5,1.1,.5,.5),"cm"),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 18),
+    axis.title = element_text(size = 15),
+    plot.subtitle = element_text(size = 13, hjust = 0),
+    title = element_text(size = 18),
+    axis.text = element_text(size = 13))
+
+vor_graph
+
+# ggsave("vor_graph\.jpg", width = 18.5, height = 9.5, units = "in")
+```
+
+
